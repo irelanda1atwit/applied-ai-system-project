@@ -186,66 +186,69 @@ st.header("4. Today's Schedule")
 if st.session_state.scheduler is None or not st.session_state.pets:
     st.info("Set up an owner and add pets with tasks to generate a schedule.")
 else:
+    # Button only triggers generation — display lives outside so it survives reruns
     if st.button("Generate Schedule"):
-        schedule = st.session_state.scheduler.generate_schedule()
+        st.session_state.scheduler.generate_schedule()
 
-        if not schedule:
-            st.warning("No tasks could be scheduled. Check your time budget or add more tasks.")
+    schedule = st.session_state.scheduler.schedule
+
+    if not schedule:
+        st.info("Press Generate Schedule to build today's plan.")
+    else:
+        total     = st.session_state.scheduler._total_scheduled_minutes()
+        remaining = st.session_state.owner.get_availability() - total
+        st.success(f"Scheduled {len(schedule)} tasks — {total} min used, {remaining} min remaining.")
+
+        # ── Conflict warnings ─────────────────────────────────────────────
+        conflicts = st.session_state.scheduler.detect_conflicts()
+        if conflicts:
+            st.error("**Scheduling conflicts detected** — two or more tasks share a time slot.")
+            for warning in conflicts:
+                st.warning(f"⚠️ {warning}")
         else:
-            total     = st.session_state.scheduler._total_scheduled_minutes()
-            remaining = st.session_state.owner.get_availability() - total
-            st.success(f"Scheduled {len(schedule)} tasks — {total} min used, {remaining} min remaining.")
+            st.success("No scheduling conflicts — all tasks have unique time slots.")
 
-            # ── Conflict warnings ─────────────────────────────────────────
-            conflicts = st.session_state.scheduler.detect_conflicts()
-            if conflicts:
-                st.error("**Scheduling conflicts detected** — two or more tasks are assigned to the same time slot. Review and adjust durations or priorities.")
-                for warning in conflicts:
-                    # Parse out the time and task names for a friendlier message
-                    st.warning(f"⚠️ {warning}")
-            else:
-                st.success("No scheduling conflicts — all tasks have unique time slots.")
+        # ── Sorted schedule table ─────────────────────────────────────────
+        st.subheader("Schedule (sorted by time)")
+        sorted_tasks = st.session_state.scheduler.sort_by_time()
+        schedule_rows = []
+        for task in sorted_tasks:
+            time_str = task.scheduled_time.strftime("%I:%M %p") if task.scheduled_time else "—"
+            due_str  = task.due_date.strftime("%b %d") if task.due_date else "—"
+            schedule_rows.append({
+                "Time":           time_str,
+                "Pet":            task.pet_name,
+                "Task":           task.title,
+                "Duration (min)": task.duration_minutes,
+                "Priority":       task.priority.name,
+                "Category":       task.category,
+                "Frequency":      task.frequency,
+                "Next Due":       due_str,
+            })
+        st.table(schedule_rows)
 
-            # ── Sorted schedule table ─────────────────────────────────────
-            st.subheader("Schedule (sorted by time)")
-            sorted_tasks = st.session_state.scheduler.sort_by_time()
-            schedule_rows = []
-            for task in sorted_tasks:
+        # ── Filter by pet — outside the button block so selectbox persists ──
+        st.subheader("Filter by pet")
+        pet_names    = ["All"] + list(st.session_state.pets.keys())
+        selected_pet = st.selectbox("Show tasks for:", pet_names, key="filter_pet")
+
+        filtered = (
+            st.session_state.scheduler.filter_tasks()
+            if selected_pet == "All"
+            else st.session_state.scheduler.filter_tasks(pet_name=selected_pet)
+        )
+
+        if filtered:
+            filter_rows = []
+            for task in filtered:
                 time_str = task.scheduled_time.strftime("%I:%M %p") if task.scheduled_time else "—"
-                due_str  = task.due_date.strftime("%b %d") if task.due_date else "—"
-                schedule_rows.append({
-                    "Time":          time_str,
-                    "Pet":           task.pet_name,
-                    "Task":          task.title,
+                filter_rows.append({
+                    "Time":           time_str,
+                    "Task":           task.title,
                     "Duration (min)": task.duration_minutes,
-                    "Priority":      task.priority.name,
-                    "Category":      task.category,
-                    "Frequency":     task.frequency,
-                    "Next Due":      due_str,
+                    "Priority":       task.priority.name,
+                    "Category":       task.category,
                 })
-            st.table(schedule_rows)
-
-            # ── Filter by pet ─────────────────────────────────────────────
-            st.subheader("Filter by pet")
-            pet_names = ["All"] + list(st.session_state.pets.keys())
-            selected_pet = st.selectbox("Show tasks for:", pet_names, key="filter_pet")
-
-            if selected_pet == "All":
-                filtered = st.session_state.scheduler.filter_tasks()
-            else:
-                filtered = st.session_state.scheduler.filter_tasks(pet_name=selected_pet)
-
-            if filtered:
-                filter_rows = []
-                for task in filtered:
-                    time_str = task.scheduled_time.strftime("%I:%M %p") if task.scheduled_time else "—"
-                    filter_rows.append({
-                        "Time":           time_str,
-                        "Task":           task.title,
-                        "Duration (min)": task.duration_minutes,
-                        "Priority":       task.priority.name,
-                        "Category":       task.category,
-                    })
-                st.table(filter_rows)
-            else:
-                st.info(f"No scheduled tasks found for {selected_pet}.")
+            st.table(filter_rows)
+        else:
+            st.info(f"No scheduled tasks found for {selected_pet}.")
