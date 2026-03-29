@@ -254,7 +254,7 @@ class PetPlanScheduler:
             A new list of CareTask objects matching all supplied filters.
             Returns all scheduled tasks when no filters are provided.
         """
-        results = self.schedule
+        results = list(self.schedule)
 
         if pet_name is not None:
             results = [t for t in results if t.pet_name.lower() == pet_name.lower()]

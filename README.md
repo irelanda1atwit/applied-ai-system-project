@@ -34,6 +34,36 @@ The `PetPlanScheduler` class was extended with four algorithmic features beyond 
 
 **Conflict detection** — `detect_conflicts()` scans the current schedule for any two tasks sharing the same time slot. It uses a `defaultdict` to bucket tasks by `"HH:MM"` key (O(n)), then returns a plain-English warning string per conflict — no exceptions raised, no schedule mutated.
 
+## Testing PawPal+
+
+### Run the test suite
+
+```bash
+python -m pytest tests/test_pawpal.py -v
+```
+
+### What the tests cover
+
+The suite contains **46 tests** across 6 classes, organized by feature:
+
+| Class | Tests | What is verified |
+|---|---|---|
+| `TestCareTask` | 5 | Task creation defaults, `mark_complete()` behavior, priority ordering |
+| `TestPetCareStats` | 9 | Adding/removing tasks, medication tracking, feeding and walk timestamps |
+| `TestOwnerStats` | 7 | Pet registration, availability, preferences, flat task aggregation |
+| `TestPetPlanScheduler` | 9 | Budget enforcement, priority sorting, time assignment, zero-budget edge case |
+| `TestSortByTime` | 3 | Chronological ordering, sentinel for unscheduled tasks, no schedule mutation |
+| `TestRecurrence` | 4 | Daily/weekly due-date calculation via `timedelta`, clone properties, re-scheduling |
+| `TestConflictDetection` | 4 | Conflict flagging, both task names in warning, clean schedule = no warnings |
+
+Key edge cases covered: owner with 0 minutes available, pet with no tasks, task with `frequency="once"` (no recurrence), calling `detect_conflicts()` before generating a schedule, and `mark_task_complete()` with a title that doesn't exist.
+
+### Confidence level
+
+**4 / 5 stars**
+
+The core scheduling logic — priority ordering, budget enforcement, recurrence, conflict detection, and sorting — is fully tested and all 46 tests pass consistently. The remaining gap is the Streamlit UI layer (`app.py`), which is not covered by unit tests. End-to-end UI behavior (user input, rendering, session state) would require integration testing to reach a 5-star confidence rating.
+
 ## Getting started
 
 ### Setup

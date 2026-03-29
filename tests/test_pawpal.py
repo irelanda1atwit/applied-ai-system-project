@@ -6,7 +6,7 @@ Run with:
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pawpal_system import CareTask, PetCareStats, OwnerStats, PetPlanScheduler, Priority
 
 
@@ -299,3 +299,183 @@ class TestPetPlanScheduler:
         schedule = scheduler.generate_schedule()
         titles = [t.title for t in schedule]
         assert titles.index("Short") < titles.index("Long")
+
+    def test_mark_task_complete_nonexistent_title_returns_none(self, owner):
+        """mark_task_complete() with a title that matches no task must return None without raising."""
+        scheduler = PetPlanScheduler(owner=owner)
+        result = scheduler.mark_task_complete("Ghost Task")
+        assert result is None
+
+    def test_mark_task_complete_once_frequency_does_not_recur(self, owner, dog):
+        """mark_task_complete() on a frequency='once' task must mark it done but create no recurrence."""
+        task = CareTask(title="Vet visit", duration_minutes=60, priority=Priority.HIGH, frequency="once")
+        dog.add_task(task)
+        scheduler = PetPlanScheduler(owner=owner)
+
+        result = scheduler.mark_task_complete("Vet visit")
+
+        assert task.completed is True
+        assert result is None
+        # Exactly one task on the pet — the original, now completed. No clone added.
+        assert len(dog.tasks) == 1
+        assert dog.tasks[0].completed is True
+
+
+# ── Sorting Tests ─────────────────────────────────────────────────────────────
+
+class TestSortByTime:
+
+    def test_sort_by_time_returns_chronological_order(self, owner, dog):
+        """sort_by_time() must return tasks ordered earliest to latest scheduled_time."""
+        # Add three tasks — intentionally in reverse priority so scheduler assigns
+        # them times in a known order: HIGH(2min) at 08:00, HIGH(5min) at 08:02,
+        # LOW(10min) at 08:07.
+        dog.add_task(CareTask(title="First",  duration_minutes=2,  priority=Priority.HIGH))
+        dog.add_task(CareTask(title="Second", duration_minutes=5,  priority=Priority.HIGH))
+        dog.add_task(CareTask(title="Third",  duration_minutes=10, priority=Priority.LOW))
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        sorted_tasks = scheduler.sort_by_time()
+        times = [t.scheduled_time for t in sorted_tasks]
+
+        # Each time must be less than or equal to the next
+        assert all(times[i] <= times[i + 1] for i in range(len(times) - 1))
+
+    def test_sort_by_time_does_not_mutate_schedule(self, owner, dog):
+        """sort_by_time() must return a new list and leave self.schedule unchanged."""
+        dog.add_task(CareTask(title="Walk", duration_minutes=20, priority=Priority.LOW))
+        dog.add_task(CareTask(title="Feed", duration_minutes=5,  priority=Priority.HIGH))
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        original_order = [t.title for t in scheduler.schedule]
+        scheduler.sort_by_time()  # call but discard result
+
+        assert [t.title for t in scheduler.schedule] == original_order
+
+    def test_sort_by_time_tasks_without_scheduled_time_go_last(self, owner, dog):
+        """Tasks with no scheduled_time (sentinel '99:99') must appear after all timed tasks."""
+        dog.add_task(CareTask(title="Timed", duration_minutes=5, priority=Priority.HIGH))
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        # Inject an unscheduled task directly into the schedule to test sentinel
+        unscheduled = CareTask(title="No Time", duration_minutes=5, priority=Priority.LOW)
+        scheduler.schedule.append(unscheduled)
+
+        sorted_tasks = scheduler.sort_by_time()
+        assert sorted_tasks[-1].title == "No Time"
+
+
+# ── Recurrence Tests ──────────────────────────────────────────────────────────
+
+class TestRecurrence:
+
+    def test_daily_task_creates_recurrence_due_tomorrow(self, owner, dog):
+        """Completing a daily task must create a new task with due_date = today + 1 day."""
+        dog.add_task(CareTask(title="Feed", duration_minutes=5, priority=Priority.HIGH, frequency="daily"))
+        scheduler = PetPlanScheduler(owner=owner)
+
+        tomorrow = (datetime.today() + timedelta(days=1)).date()
+        recurrence = scheduler.mark_task_complete("Feed")
+
+        assert recurrence is not None
+        assert recurrence.due_date.date() == tomorrow
+
+    def test_weekly_task_creates_recurrence_due_next_week(self, owner, dog):
+        """Completing a weekly task must create a new task with due_date = today + 7 days."""
+        dog.add_task(CareTask(title="Bath", duration_minutes=20, priority=Priority.MEDIUM, frequency="weekly"))
+        scheduler = PetPlanScheduler(owner=owner)
+
+        next_week = (datetime.today() + timedelta(days=7)).date()
+        recurrence = scheduler.mark_task_complete("Bath")
+
+        assert recurrence is not None
+        assert recurrence.due_date.date() == next_week
+
+    def test_recurrence_appears_in_next_generate_schedule(self, owner, dog):
+        """After a daily recurrence is created it must appear in the next generate_schedule() call."""
+        dog.add_task(CareTask(title="Feed", duration_minutes=5, priority=Priority.HIGH, frequency="daily"))
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        scheduler.mark_task_complete("Feed")
+        new_schedule = scheduler.generate_schedule()
+
+        titles = [t.title for t in new_schedule]
+        assert "Feed" in titles
+
+    def test_recurrence_inherits_original_task_properties(self, owner, dog):
+        """The cloned recurrence must carry the same title, duration, priority, and category."""
+        original = CareTask(title="Walk", duration_minutes=30, priority=Priority.HIGH,
+                            category="exercise", frequency="daily")
+        dog.add_task(original)
+        scheduler = PetPlanScheduler(owner=owner)
+
+        recurrence = scheduler.mark_task_complete("Walk")
+
+        assert recurrence.title    == original.title
+        assert recurrence.duration_minutes == original.duration_minutes
+        assert recurrence.priority == original.priority
+        assert recurrence.category == original.category
+        assert recurrence.frequency == original.frequency
+        assert recurrence.completed is False
+
+
+# ── Conflict Detection Tests ──────────────────────────────────────────────────
+
+class TestConflictDetection:
+
+    def test_detect_conflicts_flags_same_time_slot(self, owner, dog, cat):
+        """Two tasks manually set to the same scheduled_time must produce a warning."""
+        clash_time = datetime.today().replace(hour=9, minute=0, second=0, microsecond=0)
+
+        task_a = CareTask(title="Walk Mochi",    duration_minutes=20, priority=Priority.HIGH)
+        task_b = CareTask(title="Feed Whiskers", duration_minutes=5,  priority=Priority.HIGH)
+        dog.add_task(task_a)
+        cat.add_task(task_b)
+
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        # Force both tasks into the same slot to simulate a conflict
+        task_a.scheduled_time = clash_time
+        task_b.scheduled_time = clash_time
+
+        warnings = scheduler.detect_conflicts()
+        assert len(warnings) == 1
+        assert "09:00" in warnings[0]
+
+    def test_detect_conflicts_returns_empty_for_clean_schedule(self, owner, dog):
+        """A schedule with no overlapping times must return an empty warnings list."""
+        dog.add_task(CareTask(title="Walk", duration_minutes=20, priority=Priority.HIGH))
+        dog.add_task(CareTask(title="Feed", duration_minutes=5,  priority=Priority.HIGH))
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        assert scheduler.detect_conflicts() == []
+
+    def test_detect_conflicts_before_generate_returns_empty(self, owner):
+        """detect_conflicts() before generate_schedule() must return [] not raise."""
+        scheduler = PetPlanScheduler(owner=owner)
+        assert scheduler.detect_conflicts() == []
+
+    def test_detect_conflicts_reports_both_task_names(self, owner, dog, cat):
+        """The warning string must contain the titles of both conflicting tasks."""
+        clash_time = datetime.today().replace(hour=10, minute=0, second=0, microsecond=0)
+
+        task_a = CareTask(title="Groom Mochi",   duration_minutes=15, priority=Priority.MEDIUM)
+        task_b = CareTask(title="Clean Litter",  duration_minutes=10, priority=Priority.MEDIUM)
+        dog.add_task(task_a)
+        cat.add_task(task_b)
+
+        scheduler = PetPlanScheduler(owner=owner)
+        scheduler.generate_schedule()
+
+        task_a.scheduled_time = clash_time
+        task_b.scheduled_time = clash_time
+
+        warning = scheduler.detect_conflicts()[0]
+        assert "Groom Mochi" in warning
+        assert "Clean Litter" in warning
