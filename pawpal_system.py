@@ -134,21 +134,17 @@ class PetPlanScheduler:
         self._extra_tasks = [t for t in self._extra_tasks if t.title != title]
         self.schedule = [t for t in self.schedule if t.title != title]
 
-    def mark_task_complete(self, title: str) -> CareTask | None:
+    def mark_task_complete(self, title: str, pet_name: str | None = None) -> CareTask | None:
         """Mark a task complete by title and auto-schedule the next occurrence.
 
-        Searches all pet task lists (then the extra pool) for the first
-        incomplete task whose title matches. Uses next() with a generator
-        expression to short-circuit on the first match rather than scanning
-        the full list.
-
-        For tasks with frequency "daily" or "weekly", a fresh CareTask clone
-        is created with due_date set via timedelta (daily = +1 day,
-        weekly = +7 days) and added back to the same pet so it appears
-        automatically in the next generate_schedule() call.
+        When multiple pets share the same task title (e.g. "Feed"), pass
+        pet_name to target a specific pet and avoid accidentally completing
+        a newly-created recurrence on the second loop iteration.
 
         Args:
-            title: Exact title of the task to mark complete.
+            title:    Exact title of the task to mark complete.
+            pet_name: If provided, only match tasks belonging to this pet.
+                      Case-sensitive. Pass None to match the first pet found.
 
         Returns:
             The newly created recurrence CareTask, or None if the task was
@@ -156,11 +152,17 @@ class PetPlanScheduler:
         """
         _RECURRENCE_DAYS = {"daily": 1, "weekly": 7}
 
-        # Find the first incomplete task with this title across all pets
+        # Find the first incomplete task with this title (optionally filtered by pet)
         target: CareTask | None = next(
-            (t for pet in self.owner.pets for t in pet.tasks
-             if t.title == title and not t.completed),
-            None
+            (
+                t
+                for pet in self.owner.pets
+                for t in pet.tasks
+                if t.title == title
+                and not t.completed
+                and (pet_name is None or pet.name == pet_name)
+            ),
+            None,
         ) or next(
             (t for t in self._extra_tasks
              if t.title == title and not t.completed),
@@ -218,7 +220,12 @@ class PetPlanScheduler:
         )
 
         today = datetime.today()
-        hour, minute = map(int, self.owner.preferred_start_time.split(":"))
+        try:
+            hour, minute = map(int, self.owner.preferred_start_time.split(":"))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+        except (ValueError, AttributeError):
+            hour, minute = 8, 0  # safe fallback if start time is malformed
         current_time = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
         budget = self.owner.get_availability()
@@ -333,7 +340,7 @@ class PetPlanScheduler:
             )
 
         total = self._total_scheduled_minutes()
-        remaining = self.owner.get_availability() - total
+        remaining = max(0, self.owner.get_availability() - total)
         explanations.append(
             f"\nTotal scheduled: {total} min | Remaining available: {remaining} min."
         )
